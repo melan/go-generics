@@ -4,20 +4,36 @@ import (
 	"golang.org/x/exp/constraints"
 )
 
-type Traversable[T any] interface {
+type forEach[T any] interface {
 	ForEach(action func(T))
 }
 
-func Map[T, V any](t Traversable[T], transform func(T) V) Traversable[V] {
-	newList := EmptyList[V]()
-	t.ForEach(func(elem T) {
-		newList = append(newList, transform(elem))
-	})
-
-	return newList
+type Traversable[T any] interface {
+	forEach[T]
+	Head() (T, bool)
+	HeadOption() *Option[T]
+	GetOrElse(altValue T) T
+	Last() (T, bool)
+	LastOption() *Option[T]
+	Find(filter func(elem T) bool) *Option[T]
+	Exists(filter func(elem T) bool) bool
+	Count(filter func(elem T) bool) int
+	Select(filter func(elem T) bool) *List[T]
+	ForAll(filter func(elem T) bool, transform func(elem T) T) *List[T]
+	IsEmpty() bool
+	NonEmpty() bool
+	IsDefined() bool
+	Reduce(op func(a, b T) T) T
+	ToList() *List[T]
 }
 
-func Head[T any](t Traversable[T]) (T, bool) {
+type traversable[T any] struct {
+	forEach[T]
+}
+
+var _ Traversable[string] = &traversable[string]{}
+
+func (t *traversable[T]) Head() (T, bool) {
 	var found bool
 	var first T
 
@@ -33,8 +49,8 @@ func Head[T any](t Traversable[T]) (T, bool) {
 	return first, found
 }
 
-func HeadOption[T any](t Traversable[T]) Option[T] {
-	first, found := Head(t)
+func (t *traversable[T]) HeadOption() *Option[T] {
+	first, found := t.Head()
 
 	if found {
 		return Some(first)
@@ -43,7 +59,16 @@ func HeadOption[T any](t Traversable[T]) Option[T] {
 	return None[T]()
 }
 
-func Last[T any](t Traversable[T]) (T, bool) {
+func (t *traversable[T]) GetOrElse(altValue T) T {
+	head, found := t.Head()
+	if found {
+		return head
+	}
+
+	return altValue
+}
+
+func (t *traversable[T]) Last() (T, bool) {
 	var last T
 	var found bool
 
@@ -55,8 +80,8 @@ func Last[T any](t Traversable[T]) (T, bool) {
 	return last, found
 }
 
-func LastOption[T any](t Traversable[T]) Option[T] {
-	last, found := Last(t)
+func (t *traversable[T]) LastOption() *Option[T] {
+	last, found := t.Last()
 
 	if found {
 		return Some(last)
@@ -65,9 +90,9 @@ func LastOption[T any](t Traversable[T]) Option[T] {
 	return None[T]()
 }
 
-func Find[T any](t Traversable[T], filter func(elem T) bool) Option[T] {
+func (t *traversable[T]) Find(filter func(elem T) bool) *Option[T] {
 	var found bool
-	var result Option[T] = None[T]()
+	var result *Option[T] = None[T]()
 
 	t.ForEach(func(elem T) {
 		if found {
@@ -83,11 +108,11 @@ func Find[T any](t Traversable[T], filter func(elem T) bool) Option[T] {
 	return result
 }
 
-func Exists[T any](t Traversable[T], filter func(elem T) bool) bool {
-	return IsDefined[T](Find(t, filter))
+func (t *traversable[T]) Exists(filter func(elem T) bool) bool {
+	return t.Find(filter).Count(nil) > 0
 }
 
-func Count[T any](t Traversable[T], filter func(elem T) bool) int {
+func (t *traversable[T]) Count(filter func(elem T) bool) int {
 	var result int
 	t.ForEach(func(elem T) {
 		if filter == nil || filter(elem) {
@@ -98,62 +123,96 @@ func Count[T any](t Traversable[T], filter func(elem T) bool) int {
 	return result
 }
 
-func ForAll[T any](t Traversable[T], filter func(elem T) bool, action func(elem T)) {
+func (t *traversable[T]) ForAll(filter func(elem T) bool, transform func(elem T) T) *List[T] {
+	newList := EmptyList[T]()
+
 	t.ForEach(func(elem T) {
 		if filter == nil || filter(elem) {
-			action(elem)
+			newList.Add(transform(elem))
+		} else {
+			newList.Add(elem)
 		}
 	})
+
+	return newList
 }
 
-func IsEmpty[T any](t Traversable[T]) bool {
-	return Count[T](HeadOption(t), nil) == 0
+func (t *traversable[T]) IsEmpty() bool {
+	return t.HeadOption().Count(nil) == 0
 }
 
-func NonEmpty[T any](t Traversable[T]) bool {
-	return !IsEmpty(t)
+func (t *traversable[T]) NonEmpty() bool {
+	return !t.IsEmpty()
 }
 
-func IsDefined[T any](t Traversable[T]) bool {
-	return NonEmpty(t)
+func (t *traversable[T]) IsDefined() bool {
+	return !t.IsEmpty()
 }
 
-func ToSet[T comparable](t Traversable[T]) Set[T] {
-	switch t1 := t.(type) {
-	case Set[T]:
-		return t1
+func (t *traversable[T]) Reduce(op func(a, b T) T) T {
+	var initialized bool
+	var accumulator T
 
-	default:
-		newSet := EmptySet[T]()
-		t.ForEach(func(elem T) {
-			newSet[elem] = struct{}{}
-		})
+	t.ForEach(func(elem T) {
+		if !initialized {
+			accumulator = elem
+			initialized = true
+			return
+		}
 
-		return newSet
-	}
+		accumulator = op(accumulator, elem)
+	})
+
+	return accumulator
 }
 
-func ToList[T any](t Traversable[T]) List[T] {
-	switch t1 := t.(type) {
-	case List[T]:
-		return t1
+func (t *traversable[T]) Select(filter func(elem T) bool) *List[T] {
+	newList := EmptyList[T]()
 
-	default:
-		newList := EmptyList[T]()
+	t.ForEach(func(elem T) {
+		if filter(elem) {
+			newList.Add(elem)
+		}
+	})
 
-		t.ForEach(func(elem T) {
-			newList = append(newList, elem)
-		})
+	return newList
+}
 
-		return newList
-	}
+func (t *traversable[T]) ToList() *List[T] {
+	newList := EmptyList[T]()
+
+	t.ForEach(func(elem T) {
+		newList.Add(elem)
+	})
+
+	return newList
+}
+
+// Special cases which can't be implemented using the current golang
+
+func ToSet[T comparable](t *traversable[T]) *Set[T] {
+	newSet := EmptySet[T]()
+	t.ForEach(func(elem T) {
+		newSet.Add(elem)
+	})
+
+	return newSet
+}
+
+func Map[T, V any](t Traversable[T], transform func(T) V) Traversable[V] {
+	newList := EmptyList[V]()
+	t.ForEach(func(elem T) {
+		newList.Add(transform(elem))
+	})
+
+	return newList
 }
 
 type number interface {
 	constraints.Integer | constraints.Float
 }
 
-func Sum[T number](t Traversable[T]) T {
+func Sum[T number](t *traversable[T]) T {
 	var result T
 	t.ForEach(func(elem T) {
 		result += elem
@@ -162,7 +221,7 @@ func Sum[T number](t Traversable[T]) T {
 	return result
 }
 
-func Product[T number](t Traversable[T]) T {
+func Product[T number](t *traversable[T]) T {
 	var result T
 	t.ForEach(func(elem T) {
 		result *= elem
@@ -171,7 +230,7 @@ func Product[T number](t Traversable[T]) T {
 	return result
 }
 
-func Min[T constraints.Ordered](t Traversable[T]) T {
+func Min[T constraints.Ordered](t *traversable[T]) T {
 	var initialized bool
 	var result T
 	t.ForEach(func(elem T) {
@@ -189,7 +248,7 @@ func Min[T constraints.Ordered](t Traversable[T]) T {
 	return result
 }
 
-func Max[T constraints.Ordered](t Traversable[T]) T {
+func Max[T constraints.Ordered](t *traversable[T]) T {
 	var initialized bool
 	var result T
 	t.ForEach(func(elem T) {
@@ -207,27 +266,10 @@ func Max[T constraints.Ordered](t Traversable[T]) T {
 	return result
 }
 
-func Fold[T any](t Traversable[T], initialValue T, op func(a, b T) T) T {
+func Fold[T, V any](t Traversable[T], initialValue V, op func(a V, b T) V) V {
 	accumulator := initialValue
 
 	t.ForEach(func(elem T) {
-		accumulator = op(accumulator, elem)
-	})
-
-	return accumulator
-}
-
-func Reduce[T any](t Traversable[T], op func(a, b T) T) T {
-	var initialized bool
-	var accumulator T
-
-	t.ForEach(func(elem T) {
-		if !initialized {
-			accumulator = elem
-			initialized = true
-			return
-		}
-
 		accumulator = op(accumulator, elem)
 	})
 
